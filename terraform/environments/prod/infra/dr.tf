@@ -58,11 +58,11 @@ module "rds_dr" {
   cross_region_replica_identifier = "prod-mysql-dr-replica"
   replica_instance_class          = "db.t3.micro"
 
-  enable_cross_region_backups    = var.enable_cross_region_backups
-  cross_region_backup_retention  = 7
+  enable_cross_region_backups   = var.enable_cross_region_backups
+  cross_region_backup_retention = 7
 
   create_cross_region_snapshot = var.create_cross_region_snapshot
-  source_snapshot_arn           = null
+  source_snapshot_arn          = null
 
   allowed_cidr_blocks = []
 
