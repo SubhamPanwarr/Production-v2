@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nginx-smoke-test
+  namespace: production
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: nginx-smoke-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: smoke-test
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Testing nginx-service..."
+              wget -qO- http://nginx-service
+              echo
+              echo "Smoke test passed"

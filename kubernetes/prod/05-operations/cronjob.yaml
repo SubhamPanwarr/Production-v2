@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nginx-health-check
+  namespace: production
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: nginx-health-check
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: health-check
+              image: busybox:1.36
+              command:
+                - sh
+                - -c
+                - |
+                  echo "Starting scheduled health check"
+                  date
+                  wget -qO- http://nginx-service
+                  echo
+                  echo "Health check completed successfully"

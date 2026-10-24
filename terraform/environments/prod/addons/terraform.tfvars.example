@@ -1,0 +1,7 @@
+aws_region      = "us-east-1"
+environment     = "prod"
+state_bucket    = "<unique-state-bucket-name>"
+infra_state_key = "production-v2/infra/terraform.tfstate"
+
+app_namespace            = "production"
+app_service_account_name = "production-app"

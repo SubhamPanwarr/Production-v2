@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stateful-web
+  namespace: production
+  labels:
+    app: stateful-web
+spec:
+  serviceName: stateful-web
+  replicas: 2
+  selector:
+    matchLabels:
+      app: stateful-web
+  template:
+    metadata:
+      labels:
+        app: stateful-web
+    spec:
+      containers:
+        - name: stateful-web
+          image: "${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: web-data
+              mountPath: /usr/share/nginx/html/data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: web-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: ebs-gp3
+        resources:
+          requests:
+            storage: 2Gi

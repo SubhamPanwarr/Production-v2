@@ -1,0 +1,37 @@
+# Terraform working directory
+**/.terraform/*
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Plans
+*.tfplan
+tfplan*
+plan*.txt
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Local/sensitive configuration
+**/backend.hcl
+**/terraform.tfvars
+.env
+
+# Keys
+*.pem
+*.key
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# IMPORTANT:
+# Commit backend.tf and .terraform.lock.hcl.
+# Commit the *.example files below.
+!**/backend.hcl.example
+!**/terraform.tfvars.example

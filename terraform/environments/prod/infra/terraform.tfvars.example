@@ -1,0 +1,22 @@
+aws_region          = "us-east-1"
+dr_region           = "us-west-2"
+availability_zone   = "us-east-1a"
+availability_zone_2 = "us-east-1b"
+
+key_name   = "<existing-key-pair-name>"
+admin_cidr = "<your-public-ip>/32"
+ami_id     = "<amazon-linux-or-ubuntu-ami-id>"
+
+db_username = "dbadmin"
+
+eks_cluster_name           = "production-eks-cluster"
+devops_admin_principal_arn = "<your-iam-user-or-role-arn>"
+
+app_data_bucket_name = "<globally-unique-app-data-bucket-name>"
+ecr_repository_name  = "production-app"
+
+create_rds_read_replica       = false
+create_cross_region_replica   = false
+enable_cross_region_backups   = false
+create_cross_region_snapshot  = false
+enable_performance_insights   = false

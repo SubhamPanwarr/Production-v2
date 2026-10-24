@@ -1,0 +1,5 @@
+bucket       = "<unique-state-bucket-name>"
+key          = "production-v2/infra/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true
