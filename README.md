@@ -1684,3 +1684,224 @@ Encrypted gp3 EBS Volume
 ```
 
 `Production-v2` provides a practical end-to-end reference for deploying and troubleshooting AWS infrastructure, Amazon EKS, platform add-ons, Kubernetes networking, storage, security, scaling, and application delivery.
+
+## Example Voting Application on Amazon EKS
+
+`Production-v2` now includes the Docker Example Voting App as a practical multi-service Kubernetes workload.
+
+Application components:
+
+```text
+Vote UI
+   |
+   v
+Redis
+   |
+   v
+Worker
+   |
+   v
+PostgreSQL
+   |
+   v
+Result UI
+```
+
+The application source is stored under:
+
+```text
+application/voting-app/
+```
+
+Kubernetes manifests are stored under:
+
+```text
+kubernetes/voting-app/
+├── base/
+├── bluegreen/
+├── canary/
+└── ingress/
+```
+
+### Current Kubernetes Deployment
+
+The current application uses:
+
+- 3 Vote replicas
+- 3 Result replicas
+- 1 Redis replica
+- 1 Worker replica
+- 1 PostgreSQL replica
+- readiness probes
+- liveness probes
+- CPU and memory requests/limits
+- topology spread constraints
+- ClusterIP Services
+
+The PostgreSQL and Redis resources are currently designed for lab/demo use. PostgreSQL uses ephemeral storage and should be replaced with persistent storage or a managed PostgreSQL service for production use.
+
+### Container Images
+
+Application images are stored in Amazon ECR.
+
+Example tags:
+
+```text
+production-app:vote-v2
+production-app:result-v1
+production-app:worker-v1
+```
+
+The Vote image originally entered `CrashLoopBackOff` because the Docker Compose development stage relied on a local bind mount and did not package `app.py` inside the image.
+
+The problem was diagnosed using:
+
+```bash
+kubectl logs <pod> -n voting-app
+kubectl describe pod <pod> -n voting-app
+```
+
+The production Dockerfile stage was rebuilt and pushed to ECR as a new image version.
+
+### Rolling Update
+
+The Vote Deployment uses:
+
+```yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+```
+
+Updating the image created a new ReplicaSet and Kubernetes gradually replaced the failed application version with the healthy version.
+
+Verification:
+
+```bash
+kubectl rollout status deployment/vote -n voting-app
+kubectl get rs -n voting-app
+kubectl rollout history deployment/vote -n voting-app
+```
+
+### AWS Load Balancer Controller
+
+The EKS add-ons Terraform layer creates IAM and IRSA resources required by the AWS Load Balancer Controller.
+
+Terraform manages:
+
+- CoreDNS
+- kube-proxy
+- Amazon VPC CNI
+- Amazon EBS CSI Driver
+- AWS Secrets Store CSI Driver Provider
+- Metrics Server
+- ALB Controller IAM role and policy
+- application Secrets Manager IAM role
+
+The AWS Load Balancer Controller itself is installed with Helm.
+
+The controller uses the Kubernetes ServiceAccount:
+
+```text
+aws-load-balancer-controller
+```
+
+with an IRSA IAM role.
+
+### Public ALB Ingress
+
+Two internet-facing AWS Application Load Balancers currently expose the application:
+
+```text
+Internet
+   |
+   +--> Vote ALB
+   |       |
+   |       v
+   |   vote Service
+   |       |
+   |   3 Vote Pods
+   |
+   +--> Result ALB
+           |
+           v
+       result Service
+           |
+       3 Result Pods
+```
+
+Ingress configuration uses:
+
+```yaml
+alb.ingress.kubernetes.io/scheme: internet-facing
+alb.ingress.kubernetes.io/target-type: ip
+```
+
+With `target-type: ip`, the AWS ALB registers Kubernetes Pod IP addresses directly in its target groups.
+
+Both Vote and Result ALBs have been validated with HTTP `200 OK` responses.
+
+### Blue-Green Deployment
+
+Blue-Green deployment work has started for the Vote application.
+
+The design is:
+
+```text
+Production Service
+       |
+       v
+selector: slot=blue
+       |
+   Blue Pods
+
+Green Preview Service
+       |
+       v
+selector: slot=green
+       |
+   Green Pods
+```
+
+The Green environment currently runs 3 replicas.
+
+Because the general-purpose `t3.small` nodes reached their maximum Pod capacity, the Green Deployment includes a toleration allowing it to run on the dedicated frontend node:
+
+```yaml
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: frontend
+    effect: NoSchedule
+```
+
+Current Blue-Green work still to complete:
+
+```text
+1. Create Green preview Service
+2. Test Green independently
+3. Switch production Service selector from blue to green
+4. Test rollback from green to blue
+5. Automate the process through Jenkins
+```
+
+### Troubleshooting Scenarios Practiced
+
+This implementation has included practical troubleshooting for:
+
+- `CrashLoopBackOff`
+- missing application files inside Docker images
+- Docker development vs production stages
+- ECR image versioning
+- Kubernetes rolling updates
+- ReplicaSet behavior
+- Pod scheduling
+- `Too many pods`
+- Kubernetes taints and tolerations
+- AWS VPC CNI Pod IP allocation
+- EKS Pod density limits
+- AWS Load Balancer Controller IRSA
+- ALB subnet discovery
+- ALB Pod-IP target registration

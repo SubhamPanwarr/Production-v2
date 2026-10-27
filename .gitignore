@@ -35,3 +35,4 @@ Thumbs.db
 # Commit the *.example files below.
 !**/backend.hcl.example
 !**/terraform.tfvars.example
+kubernetes/voting-app/base/postgres-secret.yaml
