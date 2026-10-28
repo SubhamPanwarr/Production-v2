@@ -1790,6 +1790,47 @@ curl -s "http://$VOTE_ALB" | grep -E 'Cats|Dogs'
 
 The rollback returned the original Cats/Dogs page via the same public ALB. The lab subsequently switched back to Green. **ALB target registration, deregistration and health checks are asynchronous, so this cutover method does not guarantee zero downtime.** Inspect target health before declaring success in a production environment.
 
+### Canary deployment — weighted ALB routing
+
+Canary deployment was implemented using the existing AWS Vote ALB
+and AWS Load Balancer Controller weighted forwarding actions.
+
+The implementation uses:
+- Stable Green: 3 Pods, selected by the `vote` Service
+- Canary: 1 Pod, selected by the `vote-canary` Service
+- An ALB weighted forward action in `vote-ingress.yaml`
+
+Both target groups were verified healthy before introducing traffic.
+
+**Traffic distribution test (100 requests):**
+
+| Environment | Configured weight | Observed requests |
+|---|---:|---:|
+| Stable Green | 90% | 91 |
+| Canary | 10% | 9 |
+| Errors | — | 0 |
+
+The observed result was consistent with the intended 90/10 split.
+Weighted traffic distribution is probabilistic.
+
+**Rollback:**
+
+The Ingress weights were restored to:
+- Stable Green: 100
+- Canary: 0
+
+The restored Ingress was applied and committed to GitHub.
+A separate post-rollback ALB traffic check should confirm reconciliation.
+
+**Important:** ALB routing reconciliation is asynchronous.
+Canary promotion and rollback require application monitoring,
+target health checks and verification before declaring success.
+
+Canary manifests:
+- `kubernetes/voting-app/canary/vote-canary-deployment.yaml`
+- `kubernetes/voting-app/canary/vote-canary-service.yaml`
+- `kubernetes/voting-app/ingress/vote-ingress.yaml`
+
 ### Scheduling / node-capacity lessons
 
 The three general-purpose `t3.small` nodes hit their 11-Pod limits. Green could not fully schedule because the remaining frontend node was tainted `dedicated=frontend:NoSchedule`. Applying the following toleration resolved the pending Pods and rollout deadline:
@@ -1814,7 +1855,7 @@ All three Green Pods are currently placed on one node, a **single point of failu
 
 ### Next milestones
 
-1. Canary traffic splitting using AWS ALB weighted target groups, verification and rollback.
-2. Jenkins CI/CD with SonarQube quality gates, image building, scanning and ECR push.
-3. Deployment automation supporting Rolling, Blue-Green and Canary with approvals.
+1. Jenkins CI/CD with SonarQube, Docker, ECR and EKS deployment automation.
+2. Automate Rolling Update, Blue-Green and Canary deployment strategies.
+3. Add Jenkins approvals, smoke tests, health checks and rollback automation.
 4. More resilient Pod placement, persistent database storage, secrets management, HTTPS and monitoring.
