@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vote-canary
+  namespace: voting-app
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: vote
+    slot: canary
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80

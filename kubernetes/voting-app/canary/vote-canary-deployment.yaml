@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vote-canary
+  namespace: voting-app
+
+spec:
+  replicas: 1
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+  selector:
+    matchLabels:
+      app: vote
+      slot: canary
+
+  template:
+    metadata:
+      labels:
+        app: vote
+        slot: canary
+        version: canary-v1
+
+    spec:
+      containers:
+        - name: vote
+          image: 523881172609.dkr.ecr.us-east-1.amazonaws.com/production-app:vote-v2
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: OPTION_A
+              value: "CANARY - Cats"
+            - name: OPTION_B
+              value: "CANARY - Dogs"
+
+          ports:
+            - containerPort: 80
+              protocol: TCP
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"

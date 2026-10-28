@@ -8,6 +8,26 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /
     alb.ingress.kubernetes.io/load-balancer-name: production-vote-alb
+
+    alb.ingress.kubernetes.io/actions.vote-weighted: |
+      {
+        "type": "forward",
+        "forwardConfig": {
+          "targetGroups": [
+            {
+              "serviceName": "vote",
+              "servicePort": "80",
+              "weight": 100
+            },
+            {
+              "serviceName": "vote-canary",
+              "servicePort": "80",
+              "weight": 0
+            }
+          ]
+        }
+      }
+
 spec:
   ingressClassName: alb
   rules:
@@ -17,6 +37,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vote
+                name: vote-weighted
                 port:
-                  number: 80
+                  name: use-annotation
