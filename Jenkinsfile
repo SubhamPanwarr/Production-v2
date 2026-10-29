@@ -103,35 +103,42 @@ pipeline {
             }
         }
 
-        stage('Trivy Image Vulnerability Scan') {
-            steps {
-                sh '''
-                    set -eu
+        
+stage('Trivy Image Vulnerability Scan') {
+    steps {
+        sh '''
+            set -eu
 
-                    echo "Starting Trivy vulnerability scan..."
-                    echo "Image: $CI_IMAGE"
+            echo "Starting Trivy vulnerability scan..."
+            echo "Image: $CI_IMAGE"
 
-                    trivy image \
-                      --scanners vuln \
-                      --severity HIGH,CRITICAL \
-                      --parallel 2 \
-                      --exit-code 0 \
-                      --no-progress \
-                      --format table \
-                      --output trivy-report.txt \
-                      "$CI_IMAGE"
+            echo "Checking Docker image..."
+            docker image inspect "$CI_IMAGE" > /dev/null
 
-                    echo "Trivy scan completed."
-                    echo "First 100 lines of the report:"
-                    sed -n '1,100p' trivy-report.txt
-                '''
+            trivy image \
+              --scanners vuln \
+              --image-src docker \
+              --severity HIGH,CRITICAL \
+              --parallel 2 \
+              --timeout 15m \
+              --exit-code 0 \
+              --no-progress \
+              --format table \
+              --output trivy-report.txt \
+              "$CI_IMAGE"
 
-                archiveArtifacts(
-                    artifacts: 'trivy-report.txt',
-                    allowEmptyArchive: false
-                )
-            }
-        }
+            echo "Trivy scan completed."
+            echo "First 100 lines of report:"
+            sed -n '1,100p' trivy-report.txt
+        '''
+
+        archiveArtifacts(
+            artifacts: 'trivy-report.txt',
+            allowEmptyArchive: false
+        )
+    }
+}
+
     }
 
     post {
