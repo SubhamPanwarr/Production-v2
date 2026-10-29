@@ -1,0 +1,38 @@
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-voting-reader
+  namespace: voting-app
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "events"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-voting-reader-binding
+  namespace: voting-app
+subjects:
+  - kind: Group
+    name: jenkins-voting-readers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: jenkins-voting-reader
+  apiGroup: rbac.authorization.k8s.io
+
