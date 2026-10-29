@@ -87,7 +87,7 @@ pipeline {
                 script {
                     def scannerHome = tool 'SonarScannerCLI'
 
-                    withSonarQubeEnv('SonarCloud') {
+                    withSonarQubeEnv('SonarQube') {
                         withEnv(["SONAR_SCANNER_HOME=${scannerHome}"]) {
                             sh '''
                                 set -eu
