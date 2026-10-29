@@ -1,0 +1,68 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vote-cd-preview
+  namespace: voting-app
+  labels:
+    app: vote-cd-preview
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 180
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app: vote-cd-preview
+
+  template:
+    metadata:
+      labels:
+        app: vote-cd-preview
+
+    spec:
+      nodeSelector:
+        workload: frontend
+
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: frontend
+          effect: NoSchedule
+
+      containers:
+        - name: vote
+          image: 523881172609.dkr.ecr.us-east-1.amazonaws.com/production-app:vote-v2
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 80
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+

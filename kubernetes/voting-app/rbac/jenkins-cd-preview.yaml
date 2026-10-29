@@ -1,0 +1,27 @@
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-cd-preview-patcher
+  namespace: voting-app
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["vote-cd-preview"]
+    verbs: ["patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-cd-preview-patcher-binding
+  namespace: voting-app
+subjects:
+  - kind: Group
+    name: jenkins-voting-readers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: jenkins-cd-preview-patcher
+  apiGroup: rbac.authorization.k8s.io
+
