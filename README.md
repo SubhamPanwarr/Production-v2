@@ -6,6 +6,8 @@ The repository is designed as a practical DevOps reference for building, deployi
 
 > The original `Production` repository is intentionally kept unchanged so the older implementation can be compared with this refactored `Production-v2` architecture.
 
+> **Latest progress (29 October 2026):** Jenkins CI Build #9 passed, the Docker image was pushed to ECR, and a temporary EKS Pod returned HTTP 200. Automated Jenkins-to-EKS CD is pending. [See today’s validation log](#october-29-2026--jenkins-ci-amazon-ecr-and-eks-preview-validation).
+
 ---
 
 ## Table of Contents
@@ -31,6 +33,7 @@ The repository is designed as a practical DevOps reference for building, deployi
 - [Security Design](#security-design)
 - [Production Improvements](#production-improvements)
 - [Example Voting Application on Amazon EKS](#example-voting-application-on-amazon-eks)
+- [October 29, 2026 — CI and EKS Preview Validation](#october-29-2026--jenkins-ci-amazon-ecr-and-eks-preview-validation)
 
 ---
 
@@ -1855,7 +1858,112 @@ All three Green Pods are currently placed on one node, a **single point of failu
 
 ### Next milestones
 
-1. Jenkins CI/CD with SonarQube, Docker, ECR and EKS deployment automation.
-2. Automate Rolling Update, Blue-Green and Canary deployment strategies.
-3. Add Jenkins approvals, smoke tests, health checks and rollback automation.
-4. More resilient Pod placement, persistent database storage, secrets management, HTTPS and monitoring.
+1. **Completed (29 October 2026):** Jenkins CI with SonarQube Cloud, Trivy, Docker build/smoke test, ECR publish and manual EKS preview validation.
+2. **Next:** Jenkins-to-EKS IAM authentication, EKS access entries and namespace-scoped Kubernetes RBAC.
+3. **Next:** Jenkins-controlled deployment with approval, rollout verification and rollback while preserving Blue/Green/Canary traffic control.
+4. **Hardening:** Remediate HIGH security findings, improve node capacity and placement, persistent storage, secrets, HTTPS and monitoring.
+
+---
+
+## October 29, 2026 — Jenkins CI, Amazon ECR and EKS Preview Validation
+
+**Status: CI and ECR publishing completed; EKS preview test passed; automated Jenkins-to-EKS CD remains pending.**
+
+### Verified CI pipeline — Jenkins Build #9
+
+The root `Jenkinsfile` was pushed on `main` at Git commit `c8ba1b2` (`ci: add Trivy security gate and ECR image push`). Jenkins job: `Production-v2-CICD`.
+
+| Stage | Observed result |
+| --- | --- |
+| Checkout and repository validation | Passed |
+| Python syntax check | Passed |
+| Docker build (`--target final`) | Passed |
+| Application smoke test | Passed |
+| SonarQube Cloud analysis | Quality Gate passed; current scope is only `application/voting-app/vote/app.py` |
+| Trivy HIGH/CRITICAL report | Report archived: Debian OS scan found 48 HIGH, 0 CRITICAL |
+| Trivy CRITICAL gate | Passed; blocks ECR push on CRITICAL findings (`--exit-code 1`) |
+| ECR authentication and push | Passed using Jenkins credential ID `aws-ecr-push` |
+| ECR image digest verification | Passed |
+| Post-build cleanup | Completed |
+
+**Published immutable build tag:**
+
+```text
+523881172609.dkr.ecr.us-east-1.amazonaws.com/production-app:ci-9-c8ba1b2
+```
+
+**Digest:** `sha256:14fc951ad06a2c6a0a596bc76e2042a6eb9db88104cd672f134569fcc9194622`
+
+```bash
+aws ecr describe-images \
+  --repository-name production-app \
+  --image-ids imageTag=ci-9-c8ba1b2 \
+  --region us-east-1 \
+  --query 'imageDetails[0].{Tags:imageTags,Digest:imageDigest}' \
+  --output json
+```
+
+> Security qualification: The Trivy CRITICAL gate passed, but 48 HIGH-severity Debian OS findings remain for remediation or documented risk assessment. A passing CRITICAL-only gate does not mean the image is production-approved. Broader SonarQube source coverage is also outstanding.
+
+### Verified EKS preview test
+
+- EKS cluster `production-eks-cluster`, region `us-east-1`: **ACTIVE**.
+- Four Kubernetes worker nodes: **4/4 Ready**.
+- Existing `voting-app` workloads: 13 Pods running, including Blue, Green and Canary; Vote and Result ALB ingress addresses provisioned.
+- Live `vote`, `vote-green` and `vote-canary` Deployments still used image tag `vote-v2` during testing; the `vote` Service selected `app=vote,slot=green`.
+- A temporary Pod `vote-ci9-preview` used the new ECR image and label `app=vote-ci9-preview`. This isolated the test from the live `vote` Service.
+
+**Observed scheduling error:**
+
+```text
+0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 Too many pods.
+```
+
+Three worker nodes had reached their Kubernetes Pod scheduling limits. The fourth was dedicated to frontend workloads with taint `dedicated=frontend:NoSchedule`. The preview Pod had no matching toleration.
+
+**Solution:** Added this toleration to the *temporary preview Pod* without modifying existing Deployments or removing node taints:
+
+```yaml
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: frontend
+    effect: NoSchedule
+```
+
+The preview Pod then scheduled onto node `ip-10-10-2-219.ec2.internal`, became **1/1 Running**, and responded to `kubectl port-forward -n voting-app pod/vote-ci9-preview 8085:80`.
+
+```text
+HTTP/1.1 200 OK
+Server: gunicorn
+<title>Cats vs Dogs!</title>
+Processed by container ID vote-ci9-preview
+```
+
+The temporary preview Pod was deleted after the test. **This proves ECR-to-EKS image pull and application HTTP startup, not automatic deployment or a live release.**
+
+### Troubleshooting lessons (October 28–29)
+
+| Challenge | Cause | Resolution / current status |
+| --- | --- | --- |
+| Local SonarQube slowed/froze WSL laptop | Contention with Jenkins/containers | Used SonarQube Cloud |
+| Jenkins SonarQube installation mismatch | Jenkinsfile name differed from configured server name | Used `withSonarQubeEnv('SonarQube')` |
+| Sonar JavaScript analyzer unresponsive | Resource pressure | Scoped successful scan to one Python file; broad coverage still pending |
+| Trivy image inspection timeout | Docker image inspection timing out | `--image-src docker`, `--parallel 2`, `--timeout 15m` |
+| `environment: command not found` in Bash | Jenkins Groovy `environment {}` block run as shell script | Placed block in `Jenkinsfile` |
+| AWS Credentials not in Jenkins dropdown | AWS Credentials plugin unavailable | Installed plugin and stored credential `aws-ecr-push` |
+| Preview Pod `Pending` | Three nodes `Too many pods`; one untolerated taint | Added temporary matching frontend toleration |
+| Docker ECR login plaintext-config warning | Docker stored ECR login in Jenkins user's config | Pipeline logs out; isolated temporary `DOCKER_CONFIG` recommended |
+
+### Remaining work to finish Jenkins-to-EKS CD
+
+1. **EKS authentication:** Check EKS access mode, give a dedicated Jenkins deployment identity `eks:DescribeCluster`, create EKS access entry and generate a temporary kubeconfig. Do not copy root's kubeconfig.
+2. **Kubernetes RBAC:** Assign least-privilege permissions for deploying in `voting-app`; verify `kubectl` access under Jenkins. (`kubectl` is already installed for Jenkins, version v1.36.2; Jenkins user has no kubeconfig.)
+3. **Security:** Review/remediate 48 HIGH findings, maintain blocking CRITICAL gate, expand SonarQube analysis to additional application files.
+4. **Controlled deployment:** Add Jenkins CD stage using plain Kubernetes YAML or a controlled image update, without silently switching Blue/Green or Canary live traffic.
+5. **Promotion controls:** Add manual approval, readiness/rollout checks, HTTP/ALB target health verification, and rollback for failed releases.
+6. **Cluster capacity:** Resolve general node Pod-density limits and improve placement across nodes/AZs before production rolling deployments.
+7. **Credential hardening and end-to-end test:** Use temporary Docker auth config and least-privilege IAM; validate a new Git commit through ECR publishing, approved EKS rollout and rollback.
+
+**Architecture boundary:** Terraform manages AWS infrastructure and EKS add-ons; native Kubernetes YAML manages application resources; Jenkins should orchestrate application delivery without recreating AWS infrastructure.
+
