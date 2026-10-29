@@ -1,10 +1,11 @@
+
 pipeline {
     agent any
 
     options {
         timestamps()
         disableConcurrentBuilds()
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         skipDefaultCheckout(true)
     }
 
@@ -31,6 +32,7 @@ pipeline {
 
                     test -f application/voting-app/vote/app.py
                     test -f application/voting-app/vote/Dockerfile
+                    test -f sonar-project.properties
 
                     echo "Repository validation passed"
                     git log -1 --oneline
@@ -79,6 +81,27 @@ pipeline {
                 '''
             }
         }
+
+        stage('SonarQube Cloud Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScannerCLI'
+
+                    withSonarQubeEnv('SonarCloud') {
+                        withEnv(["SONAR_SCANNER_HOME=${scannerHome}"]) {
+                            sh '''
+                                set -eu
+                                set +x
+
+                                export SONAR_TOKEN="$SONAR_AUTH_TOKEN"
+
+                                "$SONAR_SCANNER_HOME/bin/sonar-scanner"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
     }
 
     post {
@@ -98,3 +121,4 @@ pipeline {
         }
     }
 }
+
