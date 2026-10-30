@@ -305,6 +305,48 @@ pipeline {
                         fi
 
                         kubectl get deployment "$EKS_DEPLOYMENT" -n "$EKS_NAMESPACE"
+                        
+echo 'STEP 8: Automated HTTP health verification'
+
+PROXY_PATH="/api/v1/namespaces/${EKS_NAMESPACE}/services/${EKS_DEPLOYMENT}/proxy/"
+
+SMOKE_OK=0
+
+for ATTEMPT in 1 2 3 4 5; do
+    echo "HTTP health-check attempt: $ATTEMPT"
+
+    if RESPONSE=$(kubectl get --raw "$PROXY_PATH" 2>/dev/null) &&
+       printf '%s' "$RESPONSE" | grep -q 'Cats vs Dogs!'; then
+        SMOKE_OK=1
+        echo 'HTTP health check PASSED.'
+        break
+    fi
+
+    sleep 3
+done
+
+if [ "$SMOKE_OK" -ne 1 ]; then
+    echo 'ERROR: HTTP health check FAILED.'
+
+    if [ "$CHANGED" -eq 1 ]; then
+        echo 'Restoring previous working image...'
+
+        if kubectl set image deployment/"$EKS_DEPLOYMENT" \
+              vote="$OLD_IMAGE" -n "$EKS_NAMESPACE" &&
+           kubectl rollout status deployment/"$EKS_DEPLOYMENT" \
+              -n "$EKS_NAMESPACE" --timeout=180s; then
+
+            echo 'Rollback completed successfully.'
+        else
+            echo 'CRITICAL: Rollback recovery could not be verified.'
+        fi
+    fi
+
+    exit 1
+fi
+
+echo 'Application passed Kubernetes rollout and HTTP smoke test.'
+
                         kubectl get pods -n "$EKS_NAMESPACE" -l app=vote-cd-preview -o wide
                         echo 'Integrated CI/CD EKS preview rollout PASSED.'
                     '''

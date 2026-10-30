@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-preview-http-check
+  namespace: voting-app
+rules:
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["vote-cd-preview"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-preview-http-check-binding
+  namespace: voting-app
+subjects:
+  - kind: Group
+    name: jenkins-voting-readers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: jenkins-preview-http-check
+  apiGroup: rbac.authorization.k8s.io
