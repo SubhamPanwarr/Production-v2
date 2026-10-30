@@ -6,7 +6,7 @@ The repository is designed as a practical DevOps reference for building, deployi
 
 > The original `Production` repository is intentionally kept unchanged so the older implementation can be compared with this refactored `Production-v2` architecture.
 
-> **Latest progress (29 October 2026):** Jenkins CI Build #9 passed, the Docker image was pushed to ECR, and a temporary EKS Pod returned HTTP 200. Automated Jenkins-to-EKS CD is pending. [See today’s validation log](#october-29-2026--jenkins-ci-amazon-ecr-and-eks-preview-validation).
+> **Latest verified progress (30 October 2026):** Integrated Jenkins CI/CD Build #2 published and deployed `ci-2-4f82d39` to the isolated EKS preview, with manual approval, scoped RBAC, Rolling Update and automated HTTP verification all passing. An intentionally failed image rollout was also recovered by rollback. Terraform provisioning through Jenkins is **planned, not yet implemented**. [Read October 30 update](#october-30-2026--integrated-jenkins-cicd-and-eks-preview-release).
 
 ---
 
@@ -34,6 +34,7 @@ The repository is designed as a practical DevOps reference for building, deployi
 - [Production Improvements](#production-improvements)
 - [Example Voting Application on Amazon EKS](#example-voting-application-on-amazon-eks)
 - [October 29, 2026 — CI and EKS Preview Validation](#october-29-2026--jenkins-ci-amazon-ecr-and-eks-preview-validation)
+- [October 30, 2026 — Integrated Jenkins CI/CD and EKS Preview Release](#october-30-2026--integrated-jenkins-cicd-and-eks-preview-release)
 
 ---
 
@@ -1856,7 +1857,7 @@ All three Green Pods are currently placed on one node, a **single point of failu
 - This is frontend Blue-Green; Blue and Green share the same Redis, Worker and PostgreSQL services.
 - The local WSL manifests may be newer than the GitHub `main` branch. Before pushing, ensure `base/vote-deployment.yaml` has the `slot: blue` **Pod template** label (preserve the immutable Deployment selector `app: vote`), `base/vote-service.yaml` selects the intended active `slot: green`, and the preview Service YAML is included. The README update alone does not deploy workloads or commit those files.
 
-### Next milestones
+### Next milestones (historical October 29 snapshot; see current status below)
 
 1. **Completed (29 October 2026):** Jenkins CI with SonarQube Cloud, Trivy, Docker build/smoke test, ECR publish and manual EKS preview validation.
 2. **Next:** Jenkins-to-EKS IAM authentication, EKS access entries and namespace-scoped Kubernetes RBAC.
@@ -1955,7 +1956,7 @@ The temporary preview Pod was deleted after the test. **This proves ECR-to-EKS i
 | Preview Pod `Pending` | Three nodes `Too many pods`; one untolerated taint | Added temporary matching frontend toleration |
 | Docker ECR login plaintext-config warning | Docker stored ECR login in Jenkins user's config | Pipeline logs out; isolated temporary `DOCKER_CONFIG` recommended |
 
-### Remaining work to finish Jenkins-to-EKS CD
+### Remaining work to finish Jenkins-to-EKS CD (historical October 29 snapshot; see current status below)
 
 1. **EKS authentication:** Check EKS access mode, give a dedicated Jenkins deployment identity `eks:DescribeCluster`, create EKS access entry and generate a temporary kubeconfig. Do not copy root's kubeconfig.
 2. **Kubernetes RBAC:** Assign least-privilege permissions for deploying in `voting-app`; verify `kubectl` access under Jenkins. (`kubectl` is already installed for Jenkins, version v1.36.2; Jenkins user has no kubeconfig.)
@@ -1967,3 +1968,123 @@ The temporary preview Pod was deleted after the test. **This proves ECR-to-EKS i
 
 **Architecture boundary:** Terraform manages AWS infrastructure and EKS add-ons; native Kubernetes YAML manages application resources; Jenkins should orchestrate application delivery without recreating AWS infrastructure.
 
+---
+
+## October 30, 2026 — Integrated Jenkins CI/CD and EKS Preview Release
+
+**Status: VERIFIED — Integrated Jenkins CI/CD successfully builds, scans, pushes and deploys to an isolated EKS preview, then runs an automated internal HTTP application check.** This is a lab preview, not a production traffic promotion.
+
+### Verified October 30 milestones
+
+| Activity | Outcome |
+| --- | --- |
+| Jenkins EKS IAM authentication | Assumed `production-v2-jenkins-eks-deployer` and generated temporary kubeconfig |
+| Scoped Kubernetes RBAC | Preview Deployment patch allowed; `vote` and `vote-green` patch denied |
+| Jenkins standalone CD Rolling Update | Updated `vote-cd-preview` from `vote-v2` to `ci-9-c8ba1b2` successfully |
+| Intentional invalid-image rollout | Timed out as expected, previous image was restored by Jenkins |
+| Rollback recovery | `vote-cd-preview` returned to 1/1 Ready and HTTP 200 |
+| Integrated CI/CD Build #1 | Published and deployed `ci-1-87234ee` successfully |
+| Integrated CI/CD Build #2 | Published and deployed `ci-2-4f82d39`, checked HTTP response automatically; **SUCCESS** |
+| Live Blue/Green/Canary | Image tags remained `vote-v2`; preview deployment did not alter live ALB routing |
+
+> The intentional invalid-image test correctly produced Jenkins `FAILURE`, while the automated rollback successfully restored a healthy image. The new **HTTP-content-failure rollback branch** has not yet been intentionally exercised.
+
+### Repo files and Git commits
+
+- `Jenkinsfile` — original CI pipeline.
+- `jenkins/Jenkinsfile.integrated` — combined build, scan, ECR publish, approval and EKS preview delivery pipeline.
+- `kubernetes/voting-app/cd/vote-cd-preview.yaml` — isolated preview Deployment without public Ingress.
+- `kubernetes/voting-app/cd/vote-cd-preview-service.yaml` — private ClusterIP Service for automated HTTP testing.
+- `kubernetes/voting-app/rbac/jenkins-reader.yaml` — Jenkins read-only RBAC.
+- `kubernetes/voting-app/rbac/jenkins-cd-preview.yaml` — restricts Deployment patching to `vote-cd-preview`.
+- `kubernetes/voting-app/rbac/jenkins-preview-http-check.yaml` — scoped GET permission for the preview Service proxy.
+
+| Commit | Purpose |
+| --- | --- |
+| `c74897c` | Add isolated EKS preview Deployment and restricted CD RBAC |
+| `87234ee` | Add integrated Jenkins CI/CD pipeline |
+| `4f82d39` | Add automated EKS preview HTTP health verification and recovery logic |
+
+### End-to-end workflow
+
+```text
+GitHub feature/integrated-cicd
+  -> Jenkins checkout and validation
+  -> Python syntax check
+  -> Docker build (final stage) and container smoke test
+  -> SonarQube Cloud analysis (Quality Gate PASSED in observed builds)
+  -> Trivy HIGH/CRITICAL vulnerability report and CRITICAL gate
+  -> Amazon ECR push and digest verification
+  -> Manual deployment approval
+  -> Jenkins assumes dedicated EKS IAM role, builds temporary kubeconfig
+  -> Kubernetes restricted RBAC checks
+  -> Rolling Update of vote-cd-preview only
+  -> Verify rollout and exact new image
+  -> Kubernetes API Service-proxy HTTP content test
+       |-- success -> Jenkins SUCCESS
+       `-- failed rollout or failed HTTP marker -> attempt previous-image restore
+```
+
+Jenkins uses dynamic tags derived from the pipeline build number and Git commit, writing the exact published image URI into `ecr-image.txt` for the deployment stage. It does not hardcode the previous release's ECR image.
+
+**Verified ECR images:**
+
+```text
+523881172609.dkr.ecr.us-east-1.amazonaws.com/production-app:ci-1-87234ee
+523881172609.dkr.ecr.us-east-1.amazonaws.com/production-app:ci-2-4f82d39
+```
+
+**Build #2 ECR digest:** `sha256:1d77c70bc4fde64374cad7405137604beedd7fe4d5d5bcebc390c307f0a3e157`
+
+### EKS security and verification
+
+The Jenkins credential `aws-ecr-push` can assume the EKS role `arn:aws:iam::523881172609:role/production-v2-jenkins-eks-deployer`. That role has an EKS access entry associated with Kubernetes group `jenkins-voting-readers`. Jenkins uses a temporary `KUBECONFIG`, not a copied user/root kubeconfig.
+
+The Kubernetes RBAC role for CD grants named-Deployment patch access to `vote-cd-preview`, while attempts to patch live `vote` and `vote-green` return `no`. Note that Kubernetes `resourceNames` limits which resource is patchable, not the fields inside it.
+
+The automated HTTP test requests the internal Service proxy route:
+
+```text
+/api/v1/namespaces/voting-app/services/vote-cd-preview/proxy/
+```
+
+and checks for `Cats vs Dogs!` in the returned body. It makes up to five attempts. This verifies internal application content, **not** public ALB target health, DNS, TLS or external user traffic.
+
+Verification commands:
+
+```bash
+kubectl get deployment vote-cd-preview -n voting-app -o wide
+kubectl get pods -n voting-app -l app=vote-cd-preview -o wide
+kubectl rollout history deployment/vote-cd-preview -n voting-app
+kubectl get svc vote-cd-preview -n voting-app
+kubectl get --raw /api/v1/namespaces/voting-app/services/vote-cd-preview/proxy/ | grep 'Cats vs Dogs!'
+kubectl get deployments vote vote-green vote-canary -n voting-app \
+  -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image'
+```
+
+### Known gaps before production use
+
+1. **HIGH vulnerabilities:** The Trivy Debian scan still showed 48 HIGH findings. The configured CRITICAL-only gate passing is not a security sign-off.
+2. **SonarQube scope:** Only one Python source file was analyzed in the verified runs; expand coverage and enforce required quality policy consistently.
+3. **HTTP failure recovery test:** Intentionally fail the *post-rollout HTTP content check* and confirm rollback restores the prior image and HTTP response. Only the invalid-image rollout failure path has been tested deliberately.
+4. **Capacity:** General `t3.small` nodes have previously hit the 11-Pod limit; ensure headroom, multi-node spreading and multi-AZ resilience.
+5. **Delivery model:** `kubectl set image` changes the running cluster but does not update the Git YAML image field. Introduce release manifests/GitOps to manage drift.
+6. **Production safeguards:** Add monitoring, alerting, HTTPS, external ALB checks, and appropriate data durability and security controls before live rollout.
+7. **Git workflow:** Review `feature/integrated-cicd` and merge it into `main` after testing and approval.
+
+### Proposed next phase — Jenkins-driven Terraform infrastructure (NOT YET IMPLEMENTED)
+
+The planned infrastructure pipeline will reuse existing Terraform modules and the **same S3 state bucket/key** currently managing the running environment:
+
+```text
+GitHub -> Jenkins Terraform init/validate/plan
+       -> Review plan and explicit approval
+       -> Terraform apply using existing S3 remote state
+       -> Bootstrap EKS access, RBAC and initial Kubernetes manifests
+       -> Run integrated application CI/CD
+       -> ECR -> EKS preview -> internal HTTP verification
+```
+
+Use a dedicated least-privilege Terraform provisioning identity and securely stored environment variables. Never apply the existing full infrastructure configuration against a new empty state file: duplicate resources, state conflicts and costs can result. A brand-new cluster requires namespace, RBAC and workload bootstrap before the existing CD image-update stage can succeed.
+
+Currently Jenkins executes on WSL Ubuntu; a Jenkins server/agent on EC2 or another managed host would eliminate dependence on manually starting Ubuntu. Neither Jenkins-driven infrastructure provisioning nor Jenkins hosting migration has been implemented yet.
