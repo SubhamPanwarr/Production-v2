@@ -1,0 +1,371 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 75, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+    }
+
+    environment {
+        CI_IMAGE       = "production-v2-vote:ci-${BUILD_NUMBER}"
+        AWS_REGION     = 'us-east-1'
+        AWS_ACCOUNT_ID = '523881172609'
+        ECR_REPOSITORY = 'production-app'
+        EKS_CLUSTER    = 'production-eks-cluster'
+        EKS_NAMESPACE  = 'voting-app'
+        EKS_DEPLOYMENT = 'vote-cd-preview'
+        EKS_ROLE       = 'arn:aws:iam::523881172609:role/production-v2-jenkins-eks-deployer'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh '''
+                    rm -f trivy-report.txt trivy-critical-report.txt ecr-image.txt
+                '''
+            }
+        }
+
+        stage('Verify Repository') {
+            steps {
+                sh '''
+                    set -eu
+                    test -d terraform
+                    test -d kubernetes/voting-app
+                    test -d application/voting-app
+                    test -f application/voting-app/vote/app.py
+                    test -f application/voting-app/vote/Dockerfile
+                    test -f sonar-project.properties
+                    command -v docker
+                    command -v trivy
+                    command -v aws
+                    command -v kubectl
+                    echo "Repository validation passed"
+                    git log -1 --oneline
+                '''
+            }
+        }
+
+        stage('Python Syntax Check') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 -m py_compile application/voting-app/vote/app.py
+                    echo "Python syntax validation passed"
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    set -eu
+                    docker build --target final -t "$CI_IMAGE" application/voting-app/vote
+                    echo "Docker image built successfully"
+                '''
+            }
+        }
+
+        stage('Application Smoke Test') {
+            steps {
+                sh '''
+                    set -eu
+                    docker run --rm \
+                      --network none \
+                      --entrypoint python \
+                      "$CI_IMAGE" \
+                      -c "from app import app; response = app.test_client().get('/'); assert response.status_code == 200; assert b'Cats' in response.data; assert b'Dogs' in response.data; print('Vote smoke test passed')"
+                '''
+            }
+        }
+
+        stage('SonarQube Cloud Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScannerCLI'
+                    withSonarQubeEnv('SonarQube') {
+                        withEnv(["SONAR_SCANNER_HOME=${scannerHome}"]) {
+                            sh '''
+                                set -eu
+                                set +x
+                                export SONAR_TOKEN="$SONAR_AUTH_TOKEN"
+                                "$SONAR_SCANNER_HOME/bin/sonar-scanner"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Image Vulnerability Scan') {
+            steps {
+                sh '''
+                    set -eu
+                    echo "Starting Trivy vulnerability scan..."
+                    docker image inspect "$CI_IMAGE" >/dev/null
+                    trivy image \
+                      --scanners vuln \
+                      --image-src docker \
+                      --severity HIGH,CRITICAL \
+                      --parallel 2 \
+                      --timeout 15m \
+                      --exit-code 0 \
+                      --no-progress \
+                      --format table \
+                      --output trivy-report.txt \
+                      "$CI_IMAGE"
+                    sed -n '1,100p' trivy-report.txt
+                '''
+                archiveArtifacts(artifacts: 'trivy-report.txt', allowEmptyArchive: false)
+            }
+        }
+
+        stage('Trivy CRITICAL Security Gate') {
+            steps {
+                sh '''
+                    set -eu
+                    echo "Checking for CRITICAL vulnerabilities..."
+                    trivy image \
+                      --scanners vuln \
+                      --image-src docker \
+                      --severity CRITICAL \
+                      --parallel 2 \
+                      --timeout 15m \
+                      --exit-code 1 \
+                      --no-progress \
+                      --format table \
+                      --output trivy-critical-report.txt \
+                      "$CI_IMAGE"
+                    echo "No CRITICAL vulnerabilities detected."
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts(artifacts: 'trivy-critical-report.txt', allowEmptyArchive: true)
+                }
+            }
+        }
+
+        stage('Push Docker Image to ECR') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-ecr-push'
+                ]]) {
+                    sh '''
+                        set -eu
+                        set +x
+                        umask 077
+
+                        ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                        if [ "$ACTUAL_ACCOUNT_ID" != "$AWS_ACCOUNT_ID" ]; then
+                            echo "ERROR: Unexpected AWS account"
+                            exit 1
+                        fi
+
+                        ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                        ECR_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+                        COMMIT_SHA=$(git rev-parse --short=7 HEAD)
+                        IMAGE_TAG="ci-${BUILD_NUMBER}-${COMMIT_SHA}"
+                        ECR_IMAGE="${ECR_URI}:${IMAGE_TAG}"
+
+                        aws ecr describe-repositories \
+                          --repository-names "$ECR_REPOSITORY" \
+                          --region "$AWS_REGION" >/dev/null
+
+                        # Keep Docker login credentials out of the Jenkins home directory.
+                        TMP_DOCKER_CONFIG=$(mktemp -d)
+                        export DOCKER_CONFIG="$TMP_DOCKER_CONFIG"
+                        trap 'docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true; docker image rm "$ECR_IMAGE" >/dev/null 2>&1 || true; rm -rf "$TMP_DOCKER_CONFIG"' EXIT
+
+                        aws ecr get-login-password --region "$AWS_REGION" |
+                          docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+                        docker tag "$CI_IMAGE" "$ECR_IMAGE"
+                        docker push "$ECR_IMAGE"
+
+                        DIGEST=$(aws ecr describe-images \
+                          --repository-name "$ECR_REPOSITORY" \
+                          --image-ids imageTag="$IMAGE_TAG" \
+                          --region "$AWS_REGION" \
+                          --query 'imageDetails[0].imageDigest' \
+                          --output text)
+                        case "$DIGEST" in
+                            sha256:*) echo "Verified ECR digest: $DIGEST" ;;
+                            *) echo "ERROR: ECR image digest missing"; exit 1 ;;
+                        esac
+
+                        printf '%s\\n' "$ECR_IMAGE" > ecr-image.txt
+                        echo "ECR image push completed: $ECR_IMAGE"
+                    '''
+                }
+                archiveArtifacts(artifacts: 'ecr-image.txt', allowEmptyArchive: false)
+            }
+        }
+
+        stage('Approve EKS Preview Deployment') {
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input(
+                        message: 'Approve this build for the isolated vote-cd-preview Deployment?',
+                        ok: 'Approve Preview Deployment'
+                    )
+                }
+            }
+        }
+
+        stage('Deploy to EKS Preview') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-ecr-push'
+                ]]) {
+                    sh '''
+                        set -eu
+                        set +x
+                        umask 077
+
+                        # Get the image from THIS build, not from a hardcoded tag.
+                        test -s ecr-image.txt
+                        TARGET_IMAGE=$(cat ecr-image.txt)
+                        EXPECTED_PREFIX="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:ci-${BUILD_NUMBER}-"
+                        case "$TARGET_IMAGE" in
+                            "$EXPECTED_PREFIX"*) ;;
+                            *) echo "ERROR: Unexpected ECR image URI: $TARGET_IMAGE"; exit 1 ;;
+                        esac
+
+                        TMP_KUBE=$(mktemp -d)
+                        export KUBECONFIG="$TMP_KUBE/config"
+                        trap 'rm -rf "$TMP_KUBE"' EXIT
+
+                        aws eks update-kubeconfig \
+                          --name "$EKS_CLUSTER" \
+                          --region "$AWS_REGION" \
+                          --assume-role-arn "$EKS_ROLE" \
+                          --role-arn "$EKS_ROLE" \
+                          --kubeconfig "$KUBECONFIG"
+
+                        # Verify that this role can modify only the named preview deployment.
+                        ALLOWED=$(kubectl auth can-i patch \
+                          deployments.apps/vote-cd-preview -n "$EKS_NAMESPACE")
+                        DENIED_GREEN=$(kubectl auth can-i patch \
+                          deployments.apps/vote-green -n "$EKS_NAMESPACE" || true)
+                        DENIED_BLUE=$(kubectl auth can-i patch \
+                          deployments.apps/vote -n "$EKS_NAMESPACE" || true)
+
+                        echo "Preview patch: $ALLOWED; Green patch: $DENIED_GREEN; Blue patch: $DENIED_BLUE"
+                        test "$ALLOWED" = yes
+                        test "$DENIED_GREEN" = no
+                        test "$DENIED_BLUE" = no
+
+                        # Do not begin a rollout while the preview is already unhealthy.
+                        kubectl rollout status \
+                          deployment/"$EKS_DEPLOYMENT" \
+                          -n "$EKS_NAMESPACE" --timeout=90s
+
+                        OLD_IMAGE=$(kubectl get deployment "$EKS_DEPLOYMENT" \
+                          -n "$EKS_NAMESPACE" \
+                          -o jsonpath='{.spec.template.spec.containers[0].image}')
+                        test -n "$OLD_IMAGE"
+                        echo "Previous image: $OLD_IMAGE"
+                        echo "Target image: $TARGET_IMAGE"
+
+                        CHANGED=0
+                        if [ "$OLD_IMAGE" != "$TARGET_IMAGE" ]; then
+                            kubectl set image deployment/"$EKS_DEPLOYMENT" \
+                              vote="$TARGET_IMAGE" -n "$EKS_NAMESPACE"
+                            CHANGED=1
+                        else
+                            echo 'Target image is already configured.'
+                        fi
+
+                        if ! kubectl rollout status \
+                            deployment/"$EKS_DEPLOYMENT" \
+                            -n "$EKS_NAMESPACE" --timeout=180s; then
+                            echo 'ERROR: Preview rollout failed.'
+                            if [ "$CHANGED" -eq 1 ]; then
+                                echo 'Attempting to restore the previous image...'
+                                kubectl set image deployment/"$EKS_DEPLOYMENT" \
+                                  vote="$OLD_IMAGE" -n "$EKS_NAMESPACE" || true
+                                kubectl rollout status deployment/"$EKS_DEPLOYMENT" \
+                                  -n "$EKS_NAMESPACE" --timeout=180s || true
+                            fi
+                            exit 1
+                        fi
+
+                        ACTUAL_IMAGE=$(kubectl get deployment "$EKS_DEPLOYMENT" \
+                          -n "$EKS_NAMESPACE" \
+                          -o jsonpath='{.spec.template.spec.containers[0].image}')
+                        if [ "$ACTUAL_IMAGE" != "$TARGET_IMAGE" ]; then
+                            echo 'ERROR: Deployment image mismatch.'
+                            exit 1
+                        fi
+
+                        kubectl get deployment "$EKS_DEPLOYMENT" -n "$EKS_NAMESPACE"
+                        
+echo 'STEP 8: Automated HTTP health verification'
+
+PROXY_PATH="/api/v1/namespaces/${EKS_NAMESPACE}/services/${EKS_DEPLOYMENT}/proxy/"
+
+SMOKE_OK=0
+
+for ATTEMPT in 1 2 3 4 5; do
+    echo "HTTP health-check attempt: $ATTEMPT"
+
+    if RESPONSE=$(kubectl get --raw "$PROXY_PATH" 2>/dev/null) &&
+       printf '%s' "$RESPONSE" | grep -q 'Cats vs Dogs!'; then
+        SMOKE_OK=1
+        echo 'HTTP health check PASSED.'
+        break
+    fi
+
+    sleep 3
+done
+
+if [ "$SMOKE_OK" -ne 1 ]; then
+    echo 'ERROR: HTTP health check FAILED.'
+
+    if [ "$CHANGED" -eq 1 ]; then
+        echo 'Restoring previous working image...'
+
+        if kubectl set image deployment/"$EKS_DEPLOYMENT" \
+              vote="$OLD_IMAGE" -n "$EKS_NAMESPACE" &&
+           kubectl rollout status deployment/"$EKS_DEPLOYMENT" \
+              -n "$EKS_NAMESPACE" --timeout=180s; then
+
+            echo 'Rollback completed successfully.'
+        else
+            echo 'CRITICAL: Rollback recovery could not be verified.'
+        fi
+    fi
+
+    exit 1
+fi
+
+echo 'Application passed Kubernetes rollout and HTTP smoke test.'
+
+                        kubectl get pods -n "$EKS_NAMESPACE" -l app=vote-cd-preview -o wide
+                        echo 'Integrated CI/CD EKS preview rollout PASSED.'
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+                docker image rm "$CI_IMAGE" >/dev/null 2>&1 || true
+            '''
+        }
+        success {
+            echo 'Integrated CI/CD pipeline completed successfully.'
+        }
+        failure {
+            echo 'Integrated CI/CD pipeline failed. Check the console and EKS preview status.'
+        }
+    }
+}
