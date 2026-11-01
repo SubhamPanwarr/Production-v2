@@ -9,7 +9,7 @@ COPY src ./src
 RUN mvn -B -ntp -Dmaven.test.skip=true clean package
 
 # Stage 2: Tomcat runtime
-FROM tomcat:9.0-jre17-temurin
+FROM tomcat:11.0-jre17-temurin
 
 # Create non-root application user and prepare directories
 RUN rm -rf /usr/local/tomcat/webapps/* \
