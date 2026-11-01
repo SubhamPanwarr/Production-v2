@@ -36,3 +36,5 @@ Thumbs.db
 !**/backend.hcl.example
 !**/terraform.tfvars.example
 kubernetes/voting-app/base/postgres-secret.yaml
+/application/java-login-app/target/
+/application/java-login-app/.env.local
