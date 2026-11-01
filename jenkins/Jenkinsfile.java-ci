@@ -89,7 +89,7 @@ pipeline {
                 '''
             }
         }
-   
+
 stage('Trivy Vulnerability Scan') {
     steps {
         sh '''
@@ -118,6 +118,7 @@ stage('Trivy Vulnerability Scan') {
         }
     }
 }
+    }
     post {
         always {
             archiveArtifacts(
