@@ -41,6 +41,30 @@ pipeline {
                 }
             }
         }
+        
+        stage('SonarCloud Analysis') {
+    steps {
+        dir('application/java-login-app') {
+            withCredentials([
+                string(
+                    credentialsId: 'sonarcloud-token',
+                    variable: 'SONAR_TOKEN'
+                )
+            ]) {
+                sh '''
+                    set -eu
+                    set +x
+
+                    mvn -B -ntp \
+                      org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+                      -Dsonar.host.url=https://sonarcloud.io \
+                      -Dsonar.organization=subhampanwarr-1 \
+                      -Dsonar.projectKey=subhampanwarr-1_production-v3-java-login
+                '''
+            }
+        }
+    }
+}        
 
         stage('Docker Build') {
             steps {
