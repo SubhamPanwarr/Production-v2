@@ -89,7 +89,7 @@ pipeline {
                 '''
             }
         }
-    }
+   
 stage('Trivy Vulnerability Scan') {
     steps {
         sh '''
