@@ -98,6 +98,7 @@ stage('Trivy Vulnerability Scan') {
             trivy image \
               --scanners vuln \
               --severity HIGH,CRITICAL \
+              --timeout 15m \
               --exit-code 0 \
               --no-progress \
               --format table \
