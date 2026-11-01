@@ -1,5 +1,7 @@
 package com.dpt.demo;
 
+import jakarta.servlet.DispatcherType;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -16,12 +18,24 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http.authorizeRequests()
-                .antMatchers("/", "/home", "/login", "/register", "/error").permitAll()
+    public SecurityFilterChain securityFilterChain(HttpSecurity http)
+            throws Exception {
+
+        http
+            .authorizeHttpRequests(auth -> auth
+                .dispatcherTypeMatchers(
+                    DispatcherType.FORWARD,
+                    DispatcherType.ERROR
+                ).permitAll()
+                .requestMatchers(
+                    "/", "/home", "/login",
+                    "/register", "/error"
+                ).permitAll()
                 .anyRequest().authenticated()
-            .and().formLogin()
+            )
+            .formLogin(form -> form
                 .loginPage("/login")
                 .loginProcessingUrl("/login")
                 .usernameParameter("userName")
@@ -29,10 +43,12 @@ public class SecurityConfig {
                 .defaultSuccessUrl("/user", true)
                 .failureUrl("/login?error")
                 .permitAll()
-            .and().logout()
+            )
+            .logout(logout -> logout
                 .logoutSuccessUrl("/login?logout")
-                .permitAll();
-        // Keep Spring Security CSRF protection enabled for POST forms.
+                .permitAll()
+            );
+
         return http.build();
     }
 
@@ -47,14 +63,17 @@ public class SecurityConfig {
             try {
                 return jdbc.queryForObject(
                     "SELECT username, password FROM Employee WHERE username = ?",
-                    (rs, rowNum) -> User.withUsername(rs.getString("username"))
+                    (rs, rowNum) -> User
+                        .withUsername(rs.getString("username"))
                         .password(rs.getString("password"))
                         .roles("USER")
                         .build(),
                     username
                 );
             } catch (EmptyResultDataAccessException ex) {
-                throw new UsernameNotFoundException("Invalid credentials");
+                throw new UsernameNotFoundException(
+                    "Invalid credentials"
+                );
             }
         };
     }
