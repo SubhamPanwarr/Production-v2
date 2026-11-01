@@ -1,5 +1,6 @@
 <%@ page language="java" contentType="text/html; charset=ISO-8859-1"
     pageEncoding="ISO-8859-1"%>
+<%@ taglib prefix="spring" uri="http://www.springframework.org/tags" %>
 <!DOCTYPE html>
 <html>
 <head>
@@ -7,7 +8,7 @@
 <title>Welcome to iwayQ Technology</title>
 </head>
 <body>
-Welcome ${username}
+Welcome <spring:escapeBody htmlEscape="true">${username}</spring:escapeBody>
   	  <h1 style="color:blue;" align="center"> iwayQ.com | Instant Information Site  </h1>
   	  <button onclick="window.location.href = 'http://www.iwayq.com';"> Home </button>
 	  <button onclick="window.location.href = 'http://www.iwayq.com/gallery/gallery.html';"> Gallery </button>
