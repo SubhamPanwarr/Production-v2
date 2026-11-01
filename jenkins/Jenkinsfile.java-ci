@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+    }
+
+    environment {
+        CI_IMAGE = "java-login-app:ci-${BUILD_NUMBER}"
+        DB_URL = 'jdbc:mysql://127.0.0.1:3306/UserDB'
+        DB_USERNAME = 'ci_placeholder'
+        DB_PASSWORD = 'ci_placeholder_only'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git log -1 --oneline'
+            }
+        }
+
+        stage('Verify Tools') {
+            steps {
+                sh '''
+                    set -eu
+                    java -version
+                    mvn -version
+                    docker version
+                '''
+            }
+        }
+
+        stage('Maven Build and Test') {
+            steps {
+                dir('application/java-login-app') {
+                    sh 'mvn -B -ntp clean verify'
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                dir('application/java-login-app') {
+                    sh 'docker build -t "$CI_IMAGE" .'
+                }
+            }
+        }
+
+        stage('Verify Docker Image') {
+            steps {
+                sh '''
+                    set -eu
+                    docker image inspect "$CI_IMAGE" >/dev/null
+
+                    docker run --rm \
+                      --entrypoint sh \
+                      "$CI_IMAGE" \
+                      -c 'test -s /usr/local/tomcat/webapps/ROOT.war && test "$(id -u)" = "10001"'
+
+                    echo "Docker image verification passed"
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'application/java-login-app/target/*.war',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+
+            sh '''
+                docker image rm "$CI_IMAGE" >/dev/null 2>&1 || true
+            '''
+        }
+
+        success {
+            echo 'Java application CI completed successfully.'
+        }
+
+        failure {
+            echo 'Java application CI failed. Check the console log.'
+        }
+    }
+}
