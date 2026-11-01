@@ -93,11 +93,7 @@ class WebControllersTest {
             "adalace", PASSWORD
         );
 
-        assertEquals("register", result.getViewName());
-        assertEquals(
-            "Username or email is already registered.",
-            result.getModel().get("message")
-        );
+        assertEquals("redirect:/login?registered", result.getViewName());
     }
 
     @Test
@@ -121,7 +117,7 @@ class WebControllersTest {
 
         assertEquals("login", result.getViewName());
         assertEquals(
-            "Registration complete. Please log in.",
+            "Registration request processed. If your account is available, please sign in.",
             result.getModel().get("noticeMessage")
         );
     }
