@@ -9,6 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -59,21 +60,22 @@ public class SecurityConfig {
 
     @Bean
     public UserDetailsService databaseUsers(JdbcTemplate jdbc) {
-        return username -> {
-            try {
-                return jdbc.queryForObject(
-                    "SELECT username, password FROM Employee WHERE username = ?",
-                    (rs, rowNum) -> User
-                        .withUsername(rs.getString("username"))
-                        .password(rs.getString("password"))
-                        .roles("USER")
-                        .build(),
-                    username
-                );
-            } catch (EmptyResultDataAccessException ex) {
-                throw new UsernameNotFoundException(
-                    "Invalid credentials"
-                );
+        return new UserDetailsService() {
+            @Override
+            public UserDetails loadUserByUsername(String username) {
+                try {
+                    return jdbc.queryForObject(
+                        "SELECT username, password FROM Employee WHERE username = ?",
+                        (rs, rowNum) -> User
+                            .withUsername(rs.getString("username"))
+                            .password(rs.getString("password"))
+                            .roles("USER")
+                            .build(),
+                        username
+                    );
+                } catch (EmptyResultDataAccessException ex) {
+                    throw new UsernameNotFoundException("Invalid credentials");
+                }
             }
         };
     }
