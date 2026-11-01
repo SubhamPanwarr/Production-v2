@@ -50,7 +50,7 @@ public class register {
             );
             return new ModelAndView("redirect:/login?registered");
         } catch (DuplicateKeyException e) {
-            return new ModelAndView("register", "message", "Username or email is already registered.");
+            return new ModelAndView("redirect:/login?registered");
         }
     }
 }

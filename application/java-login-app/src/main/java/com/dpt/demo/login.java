@@ -14,7 +14,7 @@ public class login {
             @RequestParam(value = "registered", required = false) String registered) {
         ModelAndView page = new ModelAndView("login");
         if (error != null) page.addObject("errorMessage", "Invalid username or password.");
-        if (registered != null) page.addObject("noticeMessage", "Registration complete. Please log in.");
+        if (registered != null) page.addObject("noticeMessage", "Registration request processed. If your account is available, please sign in.");
         return page;
     }
 
