@@ -4,7 +4,7 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
         skipDefaultCheckout(true)
     }
 
@@ -19,6 +19,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+                sh 'rm -f trivy-report.txt'
                 sh 'git log -1 --oneline'
             }
         }
@@ -30,6 +31,7 @@ pipeline {
                     java -version
                     mvn -version
                     docker version
+                    trivy --version
                 '''
             }
         }
@@ -41,30 +43,22 @@ pipeline {
                 }
             }
         }
-        
-        stage('SonarCloud Analysis') {
-    steps {
-        dir('application/java-login-app') {
-            withCredentials([
-                string(
-                    credentialsId: 'sonarcloud-token',
-                    variable: 'SONAR_TOKEN'
-                )
-            ]) {
-                sh '''
-                    set -eu
-                    set +x
 
-                    mvn -B -ntp \
-                      org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-                      -Dsonar.host.url=https://sonarcloud.io \
-                      -Dsonar.organization=subhampanwarr-1 \
-                      -Dsonar.projectKey=subhampanwarr-1_production-v3-java-login
-                '''
+        stage('SonarCloud Analysis') {
+            steps {
+                dir('application/java-login-app') {
+                    withCredentials([
+                        string(credentialsId: 'sonarcloud-token', variable: 'SONAR_TOKEN')
+                    ]) {
+                        sh '''
+                            set -eu
+                            set +x
+                            mvn -B -ntp org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.host.url=https://sonarcloud.io -Dsonar.organization=subhampanwarr-1 -Dsonar.projectKey=subhampanwarr-1_production-v3-java-login -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
+                        '''
+                    }
+                }
             }
         }
-    }
-}        
 
         stage('Docker Build') {
             steps {
@@ -79,35 +73,30 @@ pipeline {
                 sh '''
                     set -eu
                     docker image inspect "$CI_IMAGE" >/dev/null
-
-                    docker run --rm \
-                      --entrypoint sh \
-                      "$CI_IMAGE" \
-                      -c 'test -s /usr/local/tomcat/webapps/ROOT.war && test "$(id -u)" = "10001"'
-
+                    docker run --rm --entrypoint sh "$CI_IMAGE" -c 'test -s /usr/local/tomcat/webapps/ROOT.war && test "$(id -u)" = "10001"'
                     echo "Docker image verification passed"
                 '''
             }
         }
 
-stage('Trivy Vulnerability Scan') {
-    steps {
-        sh '''
-            set -eu
+        stage('Trivy Vulnerability Scan') {
+            steps {
+                sh '''
+                    set -eu
+                    set +e
+                    trivy image --scanners vuln --pkg-types library --severity HIGH,CRITICAL --timeout 15m --exit-code 1 --no-progress --format table --output trivy-report.txt "$CI_IMAGE"
+                    trivy_status=$?
+                    set -e
 
-            trivy image \
-              --scanners vuln \
-              --severity HIGH,CRITICAL \
-              --timeout 15m \
-              --exit-code 0 \
-              --no-progress \
-              --format table \
-              --output trivy-report.txt \
-              "$CI_IMAGE"
+                    if [ -s trivy-report.txt ]; then
+                        echo "=== Trivy Scan Results ==="
+                        sed -n '1,100p' trivy-report.txt
+                    fi
 
-            echo "=== Trivy Scan Results ==="
-            sed -n '1,100p' trivy-report.txt
-        '''
+                    exit "$trivy_status"
+                '''
+            }
+        }
     }
 
     post {
@@ -116,29 +105,20 @@ stage('Trivy Vulnerability Scan') {
                 artifacts: 'trivy-report.txt',
                 allowEmptyArchive: true
             )
-        }
-    }
-}
-    }
-    post {
-        always {
             archiveArtifacts(
                 artifacts: 'application/java-login-app/target/*.war',
                 allowEmptyArchive: true,
                 fingerprint: true
             )
-
-            sh '''
-                docker image rm "$CI_IMAGE" >/dev/null 2>&1 || true
-            '''
+            sh 'docker image rm "$CI_IMAGE" >/dev/null 2>&1 || true'
         }
 
         success {
-            echo 'Java application CI completed successfully.'
+            echo 'Java application CI and security gates passed.'
         }
 
         failure {
-            echo 'Java application CI failed. Check the console log.'
+            echo 'Java application CI failed. Check the console log and archived reports.'
         }
     }
 }
