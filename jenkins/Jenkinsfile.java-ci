@@ -89,12 +89,9 @@ pipeline {
                             --kubeconfig "$KUBECONFIG" >/dev/null
 
                         echo '=== Namespace permissions ==='
-                        kubectl auth can-i get deployments \
-                            --resource-name=java-login-app -n production-v3 | grep -qx yes
-                        kubectl auth can-i patch deployments \
-                            --resource-name=java-login-app -n production-v3 | grep -qx yes
-                        kubectl auth can-i watch deployments \
-                            --resource-name=java-login-app -n production-v3 | grep -qx yes
+                        kubectl auth can-i get deployment/java-login-app -n production-v3 | grep -qx yes
+                        kubectl auth can-i patch deployment/java-login-app -n production-v3 | grep -qx yes
+                        kubectl auth can-i watch deployment/java-login-app -n production-v3 | grep -qx yes
                         kubectl auth can-i list replicasets -n production-v3 | grep -qx yes
 
                         kubectl get deployment java-login-app -n production-v3
