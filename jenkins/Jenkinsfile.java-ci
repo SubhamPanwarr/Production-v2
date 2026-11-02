@@ -32,7 +32,75 @@ pipeline {
                     mvn -version
                     docker version
                     trivy --version
+                    aws --version
+                    kubectl version --client
                 '''
+            }
+        }
+
+        // Fail early if the Jenkins deployment role or namespace RBAC is missing.
+        // Only read-only Kubernetes commands are used here.
+        stage('EKS CD Preflight') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-ecr-publisher',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh '''
+                        set -eu
+                        set +x
+                        unset AWS_SESSION_TOKEN
+                        export AWS_DEFAULT_REGION=us-east-1 AWS_PAGER=""
+
+                        ROLE_ARN="arn:aws:iam::523881172609:role/production-v3-jenkins-deploy-role"
+                        ASSUMED="$(aws sts assume-role \
+                            --role-arn "$ROLE_ARN" \
+                            --role-session-name "jenkins-v3-check-${BUILD_NUMBER}" \
+                            --duration-seconds 900 \
+                            --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+                            --output text)"
+                        set -- $ASSUMED
+                        if [ "$#" -ne 3 ]; then
+                            echo 'ERROR: Could not parse STS temporary credentials'
+                            exit 1
+                        fi
+                        export AWS_ACCESS_KEY_ID="$1"
+                        export AWS_SECRET_ACCESS_KEY="$2"
+                        export AWS_SESSION_TOKEN="$3"
+                        unset ASSUMED
+
+                        KUBECONFIG="$(mktemp)"
+                        export KUBECONFIG
+                        trap 'rm -f "$KUBECONFIG"' EXIT
+                        chmod 600 "$KUBECONFIG"
+
+                        echo '=== Assumed Jenkins CD role ==='
+                        aws sts get-caller-identity --query Arn --output text
+                        echo '=== EKS cluster ==='
+                        aws eks describe-cluster \
+                            --name production-v3-eks \
+                            --region us-east-1 \
+                            --query 'cluster.status' \
+                            --output text
+                        aws eks update-kubeconfig \
+                            --name production-v3-eks \
+                            --region us-east-1 \
+                            --kubeconfig "$KUBECONFIG" >/dev/null
+
+                        echo '=== Namespace permissions ==='
+                        kubectl auth can-i get deployments \
+                            --resource-name=java-login-app -n production-v3 | grep -qx yes
+                        kubectl auth can-i patch deployments \
+                            --resource-name=java-login-app -n production-v3 | grep -qx yes
+                        kubectl auth can-i watch deployments \
+                            --resource-name=java-login-app -n production-v3 | grep -qx yes
+                        kubectl auth can-i list replicasets -n production-v3 | grep -qx yes
+
+                        kubectl get deployment java-login-app -n production-v3
+                        echo 'EKS CD preflight passed.'
+                    '''
+                }
             }
         }
 
@@ -74,7 +142,7 @@ pipeline {
                     set -eu
                     docker image inspect "$CI_IMAGE" >/dev/null
                     docker run --rm --entrypoint sh "$CI_IMAGE" -c 'test -s /usr/local/tomcat/webapps/ROOT.war && test "$(id -u)" = "10001"'
-                    echo "Docker image verification passed"
+                    echo 'Docker image verification passed'
                 '''
             }
         }
@@ -89,10 +157,9 @@ pipeline {
                     set -e
 
                     if [ -s trivy-report.txt ]; then
-                        echo "=== Trivy Scan Results ==="
+                        echo '=== Trivy Scan Results ==='
                         sed -n '1,100p' trivy-report.txt
                     fi
-
                     exit "$trivy_status"
                 '''
             }
@@ -108,7 +175,6 @@ pipeline {
                     sh '''
                         set -eu
                         set +x
-
                         AWS_REGION=us-east-1
                         REGISTRY="523881172609.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
@@ -121,27 +187,28 @@ pipeline {
 
                         aws ecr get-login-password --region "$AWS_REGION" |
                             docker login --username AWS --password-stdin "$REGISTRY"
-
                         docker tag "$CI_IMAGE" "$ECR_IMAGE"
                         docker push "$ECR_IMAGE"
 
                         echo "$ECR_IMAGE" > ecr-image.txt
-
-                        echo "ECR image published successfully"
+                        echo 'ECR image published successfully'
                         echo "$ECR_IMAGE"
                     '''
                 }
-
-                archiveArtifacts(
-                    artifacts: 'ecr-image.txt',
-                    fingerprint: true
-                )
+                archiveArtifacts(artifacts: 'ecr-image.txt', fingerprint: true)
             }
         }
 
-        // Read-only check before we configure EKS deployment permissions.
-        // This stage does not modify the cluster or Kubernetes workloads.
-        stage('EKS CD Preflight') {
+        stage('Approve EKS Deployment') {
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: 'Deploy this verified ECR image to the production-v3 EKS namespace?',
+                          ok: 'Deploy to EKS'
+                }
+            }
+        }
+
+        stage('Deploy to EKS (Rolling Update + Rollback)') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'aws-ecr-publisher',
@@ -151,31 +218,85 @@ pipeline {
                     sh '''
                         set -eu
                         set +x
+                        unset AWS_SESSION_TOKEN
+                        export AWS_DEFAULT_REGION=us-east-1 AWS_PAGER=""
 
-                        echo "=== AWS CLI ==="
-                        aws --version
-
-                        echo "=== kubectl client ==="
-                        if command -v kubectl >/dev/null 2>&1; then
-                            kubectl version --client
-                        else
-                            echo "WARNING: kubectl is not installed on this Jenkins agent."
+                        test -s ecr-image.txt
+                        NEW_IMAGE="$(cat ecr-image.txt)"
+                        if ! printf '%s\\n' "$NEW_IMAGE" | grep -Eq '^523881172609\\.dkr\\.ecr\\.us-east-1\\.amazonaws\\.com/production-v3-java-login:ci-[0-9]+-[0-9a-f]{7}$'; then
+                            echo 'ERROR: Unexpected ECR image URI; refusing deployment'
+                            exit 1
                         fi
+                        echo "Requested image: $NEW_IMAGE"
 
-                        echo "=== Jenkins AWS identity ==="
-                        aws sts get-caller-identity --query 'Arn' --output text
+                        ROLE_ARN="arn:aws:iam::523881172609:role/production-v3-jenkins-deploy-role"
+                        ASSUMED="$(aws sts assume-role \
+                            --role-arn "$ROLE_ARN" \
+                            --role-session-name "jenkins-v3-deploy-${BUILD_NUMBER}" \
+                            --duration-seconds 900 \
+                            --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+                            --output text)"
+                        set -- $ASSUMED
+                        if [ "$#" -ne 3 ]; then
+                            echo 'ERROR: Could not parse STS temporary credentials'
+                            exit 1
+                        fi
+                        export AWS_ACCESS_KEY_ID="$1"
+                        export AWS_SECRET_ACCESS_KEY="$2"
+                        export AWS_SESSION_TOKEN="$3"
+                        unset ASSUMED
 
-                        echo "=== EKS DescribeCluster permission ==="
-                        if aws eks describe-cluster \
+                        KUBECONFIG="$(mktemp)"
+                        export KUBECONFIG
+                        trap 'rm -f "$KUBECONFIG"' EXIT
+                        chmod 600 "$KUBECONFIG"
+                        aws eks update-kubeconfig \
                             --name production-v3-eks \
                             --region us-east-1 \
-                            --query 'cluster.status' \
-                            --output text; then
-                            echo "EKS cluster description succeeded."
-                        else
-                            echo "WARNING: EKS DescribeCluster did not succeed."
-                            echo "A dedicated, namespace-scoped CD identity will be configured next."
+                            --kubeconfig "$KUBECONFIG" >/dev/null
+
+                        PREVIOUS_IMAGE="$(kubectl get deployment java-login-app \
+                            -n production-v3 \
+                            -o jsonpath='{.spec.template.spec.containers[?(@.name=="java-login-app")].image}')"
+                        if [ -z "$PREVIOUS_IMAGE" ]; then
+                            echo 'ERROR: Could not determine running application image'
+                            exit 1
                         fi
+                        echo "Previous image: $PREVIOUS_IMAGE"
+
+                        if [ "$NEW_IMAGE" = "$PREVIOUS_IMAGE" ]; then
+                            echo 'Deployment already uses this image; no update required.'
+                            exit 0
+                        fi
+
+                        kubectl set image deployment/java-login-app \
+                            "java-login-app=$NEW_IMAGE" -n production-v3
+
+                        if ! kubectl rollout status deployment/java-login-app \
+                            -n production-v3 --timeout=300s; then
+                            echo 'ERROR: Rollout failed. Reverting to previous image.'
+                            kubectl set image deployment/java-login-app \
+                                "java-login-app=$PREVIOUS_IMAGE" -n production-v3
+                            if ! kubectl rollout status deployment/java-login-app \
+                                -n production-v3 --timeout=300s; then
+                                echo 'CRITICAL: Rollback did not become healthy; manual intervention required.'
+                            fi
+                            exit 1
+                        fi
+
+                        ACTUAL_IMAGE="$(kubectl get deployment java-login-app \
+                            -n production-v3 \
+                            -o jsonpath='{.spec.template.spec.containers[?(@.name=="java-login-app")].image}')"
+                        if [ "$ACTUAL_IMAGE" != "$NEW_IMAGE" ]; then
+                            echo "ERROR: Expected image $NEW_IMAGE but found $ACTUAL_IMAGE"
+                            kubectl set image deployment/java-login-app \
+                                "java-login-app=$PREVIOUS_IMAGE" -n production-v3
+                            kubectl rollout status deployment/java-login-app \
+                                -n production-v3 --timeout=300s || true
+                            exit 1
+                        fi
+                        echo "EKS rolling update succeeded: $ACTUAL_IMAGE"
+                        kubectl get deployment java-login-app -n production-v3
                     '''
                 }
             }
@@ -184,10 +305,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts(
-                artifacts: 'trivy-report.txt',
-                allowEmptyArchive: true
-            )
+            archiveArtifacts(artifacts: 'trivy-report.txt', allowEmptyArchive: true)
             archiveArtifacts(
                 artifacts: 'application/java-login-app/target/*.war',
                 allowEmptyArchive: true,
@@ -195,13 +313,11 @@ pipeline {
             )
             sh 'docker image rm "$CI_IMAGE" >/dev/null 2>&1 || true'
         }
-
         success {
-            echo 'Java application CI and security gates passed; EKS CD preflight completed.'
+            echo 'Java CI and EKS CD completed successfully.'
         }
-
         failure {
-            echo 'Java application CI failed. Check the console log and archived reports.'
+            echo 'Pipeline failed. Review the console log; verify EKS rollout and rollback status if deployment was attempted.'
         }
     }
 }
