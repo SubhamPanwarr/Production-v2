@@ -139,6 +139,47 @@ pipeline {
             }
         }
 
+        // Read-only check before we configure EKS deployment permissions.
+        // This stage does not modify the cluster or Kubernetes workloads.
+        stage('EKS CD Preflight') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-ecr-publisher',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh '''
+                        set -eu
+                        set +x
+
+                        echo "=== AWS CLI ==="
+                        aws --version
+
+                        echo "=== kubectl client ==="
+                        if command -v kubectl >/dev/null 2>&1; then
+                            kubectl version --client
+                        else
+                            echo "WARNING: kubectl is not installed on this Jenkins agent."
+                        fi
+
+                        echo "=== Jenkins AWS identity ==="
+                        aws sts get-caller-identity --query 'Arn' --output text
+
+                        echo "=== EKS DescribeCluster permission ==="
+                        if aws eks describe-cluster \
+                            --name production-v3-eks \
+                            --region us-east-1 \
+                            --query 'cluster.status' \
+                            --output text; then
+                            echo "EKS cluster description succeeded."
+                        else
+                            echo "WARNING: EKS DescribeCluster did not succeed."
+                            echo "A dedicated, namespace-scoped CD identity will be configured next."
+                        fi
+                    '''
+                }
+            }
+        }
     }
 
     post {
@@ -156,7 +197,7 @@ pipeline {
         }
 
         success {
-            echo 'Java application CI and security gates passed.'
+            echo 'Java application CI and security gates passed; EKS CD preflight completed.'
         }
 
         failure {
@@ -164,3 +205,4 @@ pipeline {
         }
     }
 }
+
