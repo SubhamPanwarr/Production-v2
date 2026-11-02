@@ -111,3 +111,9 @@ variable "workload_taints" {
     }
   ]
 }
+
+variable "public_access_cidrs" {
+  description = "Public CIDRs allowed to access the EKS API endpoint."
+  type        = list(string)
+  default     = ["0.0.0.0/0"] # Preserve existing v2 module behavior.
+}

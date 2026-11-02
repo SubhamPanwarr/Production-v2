@@ -1,0 +1,3 @@
+# In WSL, run: curl -4 -fsS https://checkip.amazonaws.com
+# Replace this sample CIDR with your current public IP plus /32.
+public_access_cidrs = ["203.0.113.10/32"]
