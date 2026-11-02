@@ -128,7 +128,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 dir('application/java-login-app') {
-                    sh 'docker build -t "$CI_IMAGE" .'
+                    sh 'docker buildx build --builder jenkins-v3-buildkit --platform linux/amd64 --progress=plain --load -t "$CI_IMAGE" .'
                 }
             }
         }
