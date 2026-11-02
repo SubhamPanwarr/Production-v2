@@ -19,7 +19,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-                sh 'rm -f trivy-report.txt'
+                sh 'rm -f trivy-report.txt ecr-image.txt'
                 sh 'git log -1 --oneline'
             }
         }
@@ -97,6 +97,48 @@ pipeline {
                 '''
             }
         }
+
+        stage('Publish to ECR') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-ecr-publisher',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh '''
+                        set -eu
+                        set +x
+
+                        AWS_REGION=us-east-1
+                        REGISTRY="523881172609.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                        SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+                        IMAGE_TAG="ci-${BUILD_NUMBER}-${SHORT_SHA}"
+                        ECR_IMAGE="${REGISTRY}/production-v3-java-login:${IMAGE_TAG}"
+
+                        export DOCKER_CONFIG="$(mktemp -d)"
+                        trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+
+                        aws ecr get-login-password --region "$AWS_REGION" |
+                            docker login --username AWS --password-stdin "$REGISTRY"
+
+                        docker tag "$CI_IMAGE" "$ECR_IMAGE"
+                        docker push "$ECR_IMAGE"
+
+                        echo "$ECR_IMAGE" > ecr-image.txt
+
+                        echo "ECR image published successfully"
+                        echo "$ECR_IMAGE"
+                    '''
+                }
+
+                archiveArtifacts(
+                    artifacts: 'ecr-image.txt',
+                    fingerprint: true
+                )
+            }
+        }
+
     }
 
     post {
