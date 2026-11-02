@@ -1,0 +1,5 @@
+bucket       = "subham-production-terraform-state"
+key          = "production-v3/addons/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

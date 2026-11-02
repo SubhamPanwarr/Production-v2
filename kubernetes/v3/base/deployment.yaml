@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-login-app
+  namespace: production-v3
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: java-login-app
+  template:
+    metadata:
+      labels:
+        app: java-login-app
+    spec:
+      serviceAccountName: java-login-app
+      containers:
+        - name: java-login-app
+          image: 523881172609.dkr.ecr.us-east-1.amazonaws.com/production-v3-java-login:ci-16-6e8135b
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              export DB_USERNAME="$(cat /mnt/secrets-store/username)"
+              export DB_PASSWORD="$(cat /mnt/secrets-store/password)"
+              exec catalina.sh run
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DB_URL
+              value: "jdbc:mysql://production-v3-mysql.c4lyoaoa07ac.us-east-1.rds.amazonaws.com:3306/UserDB"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=65.0"
+          volumeMounts:
+            - name: db-secrets
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          startupProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 18
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            periodSeconds: 20
+      volumes:
+        - name: db-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: java-login-app-db

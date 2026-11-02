@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: java-login-service
+  namespace: production-v3
+spec:
+  type: ClusterIP
+  selector:
+    app: java-login-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
