@@ -51,7 +51,8 @@ spec:
           image: "${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 80
+            - name: http
+              containerPort: 80
           resources:
             requests:
               cpu: 100m
@@ -75,6 +76,21 @@ spec:
             - name: secrets-store-inline
               mountPath: /mnt/secrets-store
               readOnly: true
+        - name: nginx-prometheus-exporter
+          image: nginx/nginx-prometheus-exporter:1.5.3
+          args:
+            - --nginx.scrape-uri=http://127.0.0.1:8080/stub_status
+          ports:
+            - name: metrics
+              containerPort: 9113
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       volumes:
         - name: secrets-store-inline
           csi:

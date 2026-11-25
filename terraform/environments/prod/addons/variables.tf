@@ -28,3 +28,14 @@ variable "app_service_account_name" {
   type    = string
   default = "production-app"
 }
+
+variable "grafana_admin_password" {
+  description = "Grafana admin password. Provide through TF_VAR_grafana_admin_password; do not commit it in a tfvars file."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.grafana_admin_password) >= 16
+    error_message = "Grafana admin password must contain at least 16 characters."
+  }
+}

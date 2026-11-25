@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: nginx-service
   namespace: production
+  labels:
+    app: nginx
 spec:
   type: ClusterIP
   selector:
@@ -12,3 +14,7 @@ spec:
       protocol: TCP
       port: 80
       targetPort: 80
+    - name: metrics
+      protocol: TCP
+      port: 9113
+      targetPort: metrics
