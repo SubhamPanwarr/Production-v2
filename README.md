@@ -19,6 +19,7 @@ The repository is designed as a practical DevOps reference for building, deployi
 - [Network Architecture](#network-architecture)
 - [EKS Architecture](#eks-architecture)
 - [EKS Managed Add-ons](#eks-managed-add-ons)
+- [Prometheus and Grafana YAML Demo](#november-27-2026--yaml-based-prometheus-and-grafana-demo)
 - [AWS Load Balancer Controller](#aws-load-balancer-controller)
 - [Application Request Flow](#application-request-flow)
 - [Kubernetes Workloads](#kubernetes-workloads)
@@ -2088,3 +2089,95 @@ GitHub -> Jenkins Terraform init/validate/plan
 Use a dedicated least-privilege Terraform provisioning identity and securely stored environment variables. Never apply the existing full infrastructure configuration against a new empty state file: duplicate resources, state conflicts and costs can result. A brand-new cluster requires namespace, RBAC and workload bootstrap before the existing CD image-update stage can succeed.
 
 Currently Jenkins executes on WSL Ubuntu; a Jenkins server/agent on EC2 or another managed host would eliminate dependence on manually starting Ubuntu. Neither Jenkins-driven infrastructure provisioning nor Jenkins hosting migration has been implemented yet.
+
+---
+
+## November 27, 2026 — YAML-Based Prometheus and Grafana Demo
+
+**Status: Deployed and verified on the EKS cluster.** This branch contains a standalone Kubernetes-YAML learning setup for Prometheus and Grafana. It runs in the separate `monitoring-yaml` namespace alongside the existing Terraform/Helm-managed monitoring release in `monitoring`; it does not replace that release.
+
+### What the demo deploys
+
+- Prometheus discovers NGINX exporter endpoints through Kubernetes EndpointSlices and scrapes the `metrics` port (`9113`) every 30 seconds.
+- Grafana has a provisioned Prometheus data source and a dashboard named **NGINX Metrics - YAML Demo**.
+- The dashboard visualizes `nginx_connections_active` for each NGINX pod.
+- Prometheus stores data on a 2 GiB PVC; Grafana uses a 1 GiB PVC. Both use the existing `ebs-gp3` StorageClass.
+- A read-only Role and cross-namespace RoleBinding let Prometheus discover the production Service, Pods, and EndpointSlices.
+- An additional NetworkPolicy allows Prometheus in `monitoring-yaml` to reach the NGINX exporter on TCP 9113. This is additive to the existing production network policies.
+
+### Manifest map
+
+| File | Purpose |
+| --- | --- |
+| `kubernetes/prod/07-monitoring-yaml-demo/00-namespace.yaml` | Isolated demo namespace |
+| `01-prometheus-rbac.yaml` | Prometheus ServiceAccount and namespaced discovery permissions |
+| `02-nginx-metrics-network-policy.yaml` | Allows demo Prometheus to scrape the NGINX exporter |
+| `03-prometheus-config.yaml` | Scrape interval, EndpointSlice discovery, and target relabeling |
+| `04-prometheus.yaml` | Prometheus PVC, Deployment, and ClusterIP Service |
+| `05-grafana-config.yaml` | Grafana datasource, dashboard provider, and dashboard JSON |
+| `06-grafana.yaml` | Grafana PVC, Deployment, and ClusterIP Service |
+
+A step-by-step guide is in [docs/monitoring-yaml-demo.md](docs/monitoring-yaml-demo.md).
+
+### Apply and verify
+
+From the repository root on branch `monitoring-yaml-demo`, confirm the target cluster and prerequisites:
+
+```bash
+git switch monitoring-yaml-demo
+git pull --ff-only origin monitoring-yaml-demo
+kubectl config current-context
+kubectl get nodes
+kubectl get svc nginx-service -n production --show-labels
+kubectl get storageclass ebs-gp3
+```
+
+The NGINX Service must have label `app=nginx` and a port named `metrics`. Then apply the demo and wait for both Deployments:
+
+```bash
+kubectl apply -f kubernetes/prod/07-monitoring-yaml-demo/
+kubectl rollout status deployment/prometheus-yaml -n monitoring-yaml --timeout=5m
+kubectl rollout status deployment/grafana-yaml -n monitoring-yaml --timeout=5m
+kubectl get pods,pvc,svc -n monitoring-yaml
+```
+
+Port-forward Prometheus and Grafana in separate terminals:
+
+```bash
+kubectl port-forward -n monitoring-yaml svc/prometheus-yaml 9092:9090
+kubectl port-forward -n monitoring-yaml svc/grafana-yaml 3001:3000
+```
+
+- Prometheus: [http://localhost:9092/targets](http://localhost:9092/targets)
+- Grafana: [http://localhost:3001](http://localhost:3001). Initial credentials are `admin/admin`; change the password at first login.
+
+Verify the three NGINX exporter endpoints in Prometheus with:
+
+```promql
+up{namespace="production",service="nginx-service"}
+```
+
+Three series with value `1` confirm all three exporter endpoints are being scraped. The Grafana dashboard query is:
+
+```promql
+nginx_connections_active{namespace="production",service="nginx-service"}
+```
+
+### YAML versus Terraform/Helm in this project
+
+The original monitoring stack is managed by Terraform and Helm in `terraform/environments/prod/addons`. This demo instead stores Kubernetes objects and Prometheus/Grafana configuration as version-controlled YAML and applies them with `kubectl apply`. Git preserves the files and history; there is no Jenkins or GitOps sync for this demo. The installations use distinct namespaces and resource names.
+
+This small demo is intended to teach scraping, Kubernetes service discovery, RBAC, NetworkPolicy, persistent volumes, Grafana data-source provisioning, and dashboard provisioning. It is not feature-equivalent to `kube-prometheus-stack`, which includes additional exporters, alerting components, Kubernetes monitoring rules, and operator-managed resources.
+
+### Remove only the YAML demo
+
+The following cleanup removes its additive production policy and discovery RBAC, then removes the demo namespace and its workloads:
+
+```bash
+kubectl delete networkpolicy nginx-allow-yaml-monitoring-demo -n production --ignore-not-found
+kubectl delete rolebinding prometheus-yaml-discovery -n production --ignore-not-found
+kubectl delete role prometheus-yaml-discovery -n production --ignore-not-found
+kubectl delete namespace monitoring-yaml --wait=true
+```
+
+The two demo PVCs use the `ebs-gp3` StorageClass with `Delete` reclaim policy; verify that the PVCs and provisioned volumes are gone after cleanup. The existing `monitoring` namespace is outside this cleanup.
