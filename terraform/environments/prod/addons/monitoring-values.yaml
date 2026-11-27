@@ -1,0 +1,116 @@
+grafana:
+  enabled: true
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: ebs-gp3
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+prometheus:
+  enabled: true
+  prometheusSpec:
+    retention: 7d
+    retentionSize: 8GB
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ebs-gp3
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  additionalServiceMonitors:
+    production-nginx:
+      namespaceSelector:
+        matchNames:
+          - production
+      selector:
+        matchLabels:
+          app: nginx
+      endpoints:
+        - port: metrics
+          path: /metrics
+          interval: 30s
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ebs-gp3
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+kubeStateMetrics:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  tolerations:
+    - operator: Exists
+
+additionalPrometheusRulesMap:
+  production-workload-alerts:
+    groups:
+      - name: production.workloads
+        rules:
+          - alert: ProductionNginxTargetDown
+            expr: absent(up{namespace="production", service="nginx-service"}) or up{namespace="production", service="nginx-service"} == 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "NGINX metrics target is unavailable"
+              description: "Prometheus has not scraped the production NGINX exporter successfully for 5 minutes."
+          - alert: ProductionPodsRestarting
+            expr: increase(kube_pod_container_status_restarts_total{namespace="production"}[15m]) > 3
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Production pod is restarting repeatedly"
+              description: "A production container restarted more than three times in 15 minutes."

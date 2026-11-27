@@ -1,0 +1,4 @@
+bucket       = "REPLACE_WITH_EXISTING_STATE_BUCKET"
+key          = "production-v2/workloads/terraform.tfstate"
+region       = "us-east-1"
+use_lockfile = true

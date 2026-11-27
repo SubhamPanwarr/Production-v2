@@ -1,0 +1,166 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+    }
+
+    environment {
+        CI_IMAGE = "java-login-app:ci-${BUILD_NUMBER}"
+        DB_URL = 'jdbc:mysql://127.0.0.1:3306/UserDB'
+        DB_USERNAME = 'ci_placeholder'
+        DB_PASSWORD = 'ci_placeholder_only'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'rm -f trivy-report.txt ecr-image.txt'
+                sh 'git log -1 --oneline'
+            }
+        }
+
+        stage('Verify Tools') {
+            steps {
+                sh '''
+                    set -eu
+                    java -version
+                    mvn -version
+                    docker version
+                    trivy --version
+                '''
+            }
+        }
+
+        stage('Maven Build and Test') {
+            steps {
+                dir('application/java-login-app') {
+                    sh 'mvn -B -ntp clean verify'
+                }
+            }
+        }
+
+        stage('SonarCloud Analysis') {
+            steps {
+                dir('application/java-login-app') {
+                    withCredentials([
+                        string(credentialsId: 'sonarcloud-token', variable: 'SONAR_TOKEN')
+                    ]) {
+                        sh '''
+                            set -eu
+                            set +x
+                            mvn -B -ntp org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.host.url=https://sonarcloud.io -Dsonar.organization=subhampanwarr-1 -Dsonar.projectKey=subhampanwarr-1_production-v3-java-login -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                dir('application/java-login-app') {
+                    sh 'docker build -t "$CI_IMAGE" .'
+                }
+            }
+        }
+
+        stage('Verify Docker Image') {
+            steps {
+                sh '''
+                    set -eu
+                    docker image inspect "$CI_IMAGE" >/dev/null
+                    docker run --rm --entrypoint sh "$CI_IMAGE" -c 'test -s /usr/local/tomcat/webapps/ROOT.war && test "$(id -u)" = "10001"'
+                    echo "Docker image verification passed"
+                '''
+            }
+        }
+
+        stage('Trivy Vulnerability Scan') {
+            steps {
+                sh '''
+                    set -eu
+                    set +e
+                    trivy image --scanners vuln --pkg-types library --severity HIGH,CRITICAL --timeout 15m --exit-code 1 --no-progress --format table --output trivy-report.txt "$CI_IMAGE"
+                    trivy_status=$?
+                    set -e
+
+                    if [ -s trivy-report.txt ]; then
+                        echo "=== Trivy Scan Results ==="
+                        sed -n '1,100p' trivy-report.txt
+                    fi
+
+                    exit "$trivy_status"
+                '''
+            }
+        }
+
+        stage('Publish to ECR') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-ecr-publisher',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh '''
+                        set -eu
+                        set +x
+
+                        AWS_REGION=us-east-1
+                        REGISTRY="523881172609.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                        SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+                        IMAGE_TAG="ci-${BUILD_NUMBER}-${SHORT_SHA}"
+                        ECR_IMAGE="${REGISTRY}/production-v3-java-login:${IMAGE_TAG}"
+
+                        export DOCKER_CONFIG="$(mktemp -d)"
+                        trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+
+                        aws ecr get-login-password --region "$AWS_REGION" |
+                            docker login --username AWS --password-stdin "$REGISTRY"
+
+                        docker tag "$CI_IMAGE" "$ECR_IMAGE"
+                        docker push "$ECR_IMAGE"
+
+                        echo "$ECR_IMAGE" > ecr-image.txt
+
+                        echo "ECR image published successfully"
+                        echo "$ECR_IMAGE"
+                    '''
+                }
+
+                archiveArtifacts(
+                    artifacts: 'ecr-image.txt',
+                    fingerprint: true
+                )
+            }
+        }
+
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'trivy-report.txt',
+                allowEmptyArchive: true
+            )
+            archiveArtifacts(
+                artifacts: 'application/java-login-app/target/*.war',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+            sh 'docker image rm "$CI_IMAGE" >/dev/null 2>&1 || true'
+        }
+
+        success {
+            echo 'Java application CI and security gates passed.'
+        }
+
+        failure {
+            echo 'Java application CI failed. Check the console log and archived reports.'
+        }
+    }
+}
