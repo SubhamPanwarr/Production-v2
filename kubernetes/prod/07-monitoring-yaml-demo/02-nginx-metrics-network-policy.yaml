@@ -1,0 +1,21 @@
+# Additive policy: allows the isolated YAML-demo Prometheus to scrape the
+# existing NGINX exporter on port 9113. Kubernetes NetworkPolicy allows are additive.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nginx-allow-yaml-monitoring-demo
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring-yaml
+      ports:
+        - protocol: TCP
+          port: 9113

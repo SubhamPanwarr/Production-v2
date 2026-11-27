@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-yaml
+  namespace: monitoring-yaml
+---
+# Prometheus discovers only Services, endpoints, and Pods in production.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-yaml-discovery
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["services", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+# This cross-namespace RoleBinding grants the monitoring ServiceAccount the
+# production-namespace Role above; it does not grant cluster-wide discovery.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-yaml-discovery
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-yaml
+    namespace: monitoring-yaml
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-yaml-discovery

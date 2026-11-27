@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-yaml-config
+  namespace: monitoring-yaml
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+
+    scrape_configs:
+      - job_name: nginx-exporter
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: endpointslice
+            namespaces:
+              names:
+                - production
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            action: keep
+            regex: production
+          - source_labels: [__meta_kubernetes_service_label_app]
+            action: keep
+            regex: nginx
+          - source_labels: [__meta_kubernetes_endpointslice_port_name]
+            action: keep
+            regex: metrics
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_service_name]
+            target_label: service
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
