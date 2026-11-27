@@ -38,6 +38,7 @@ pipeline {
                 script {
                     env.IMAGE_TAG = "nginx-${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
                 }
+
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-production-deployer'
@@ -45,15 +46,19 @@ pipeline {
                     sh '''
                         set -eu
                         set +x
+
                         terraform -chdir=terraform/environments/prod/infra init \
                           -backend-config="bucket=$TF_STATE_BUCKET" \
                           -backend-config="key=production-v2/infra/terraform.tfstate" \
                           -backend-config="region=$AWS_REGION" \
                           -backend-config="use_lockfile=true"
+
                         ECR_URI=$(terraform -chdir=terraform/environments/prod/infra output -raw ecr_repository_url)
                         ECR_REGISTRY="${ECR_URI%%/*}"
+
                         aws ecr get-login-password --region "$AWS_REGION" |
                           docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
                         docker build -t "$ECR_URI:$IMAGE_TAG" app
                         docker push "$ECR_URI:$IMAGE_TAG"
                         docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true
@@ -70,15 +75,19 @@ pipeline {
                 ]]) {
                     sh '''
                         set -eu
+
                         terraform -chdir="$WORKLOAD_DIR" init \
                           -backend-config="bucket=$TF_STATE_BUCKET" \
                           -backend-config="key=production-v2/workloads/terraform.tfstate" \
                           -backend-config="region=$AWS_REGION" \
                           -backend-config="use_lockfile=true"
+
                         terraform -chdir="$WORKLOAD_DIR" validate
+
                         terraform -chdir="$WORKLOAD_DIR" plan \
                           -var="state_bucket=$TF_STATE_BUCKET" \
                           -var="image_tag=$IMAGE_TAG" \
+                          -var='enable_network_policy=true' \
                           -out=production.tfplan
                     '''
                 }
@@ -87,7 +96,8 @@ pipeline {
 
         stage('Approve production deployment') {
             steps {
-                input message: "Deploy ${env.IMAGE_TAG} to the production EKS namespace?", ok: 'Deploy'
+                input message: "Deploy ${env.IMAGE_TAG} to the production EKS namespace?",
+                      ok: 'Deploy'
             }
         }
 
@@ -99,13 +109,16 @@ pipeline {
                 ]]) {
                     sh '''
                         set -eu
+
                         terraform -chdir="$WORKLOAD_DIR" apply production.tfplan
                         kubectl rollout status deployment/nginx -n production --timeout=5m
+
                         terraform -chdir="$WORKLOAD_DIR" plan \
                           -var="state_bucket=$TF_STATE_BUCKET" \
                           -var="image_tag=$IMAGE_TAG" \
                           -var='enable_network_policy=true' \
                           -out=network-policy.tfplan
+
                         terraform -chdir="$WORKLOAD_DIR" apply network-policy.tfplan
                     '''
                 }
